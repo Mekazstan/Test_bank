@@ -1,4 +1,5 @@
 import random
+import requests
 from django.http import HttpResponseBadRequest
 from django.core.mail import send_mail
 from django.shortcuts import render, redirect, get_object_or_404
@@ -6,9 +7,15 @@ from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.contrib.auth import login as auth_login
 from django.contrib.auth.views import LoginView
-from .forms import ContactAdminForm, RegisterForm, TransferForm
+from .forms import ContactAdminForm, RegisterForm, TransactionFilterForm, TransferForm
 from .models import Account, Transaction, Transfer, Notification
 from django.urls import reverse
+from django_otp.plugins.otp_totp.models import TOTPDevice
+from django_otp.util import random_hex
+from django.template.loader import render_to_string
+from django.http import HttpResponse
+from xhtml2pdf import pisa
+from io import BytesIO
 
 
 def register(request):
@@ -85,14 +92,28 @@ def withdraw(request):
             return render(request, 'bank/withdraw.html', {'error': 'Insufficient funds'})
     return render(request, 'bank/withdraw.html')
 
+
+def get_exchange_rate(base_currency, target_currency):
+    api_url = f'https://api.exchangerate-api.com/v4/latest/{base_currency}'
+    response = requests.get(api_url)
+    rates = response.json().get('rates', {})
+    return rates.get(target_currency, 1)
+
+
 @login_required
 def transfer(request):
     from_account = Account.objects.get(user=request.user)
     if request.method == 'POST':
         to_account_number = request.POST.get('to_account')
         amount = float(request.POST.get('amount'))
+        currency = request.POST.get('currency', 'USD')  # Default to USD
         pin = request.POST.get('pin')
+        base_currency = 'USD'  # Assuming base currency is USD for simplicity
 
+        # Get exchange rate and convert amount to base currency
+        exchange_rate = get_exchange_rate(base_currency, currency)
+        amount_in_base_currency = amount * exchange_rate
+        
         # Validate account number
         try:
             to_account = Account.objects.get(account_number=to_account_number)
@@ -134,6 +155,7 @@ def transfer(request):
             fail_silently=False,
         )
 
+        messages.success(request, 'Transfer successful.')
         return redirect('dashboard')
     
     return render(request, 'bank/transfer.html')
@@ -180,16 +202,51 @@ def generate_otp(request):
 
     return render(request, 'bank/generate_otp.html', {'form': form})
 
+
+@login_required
+def setup_otp(request):
+    user = request.user
+    if request.method == 'POST':
+        device = TOTPDevice.objects.create(user=user, name="Default", confirmed=False)
+        device.key = random_hex(20)
+        device.save()
+        # Optionally send a QR code or secret key to the user
+        return redirect('otp_verify')
+    return render(request, 'setup_otp.html')
+
+@login_required
+def verify_otp(request):
+    if request.method == 'POST':
+        otp_token = request.POST.get('otp_token')
+        user = request.user
+        device = TOTPDevice.objects.filter(user=user, confirmed=True).first()
+        if device and device.verify_token(otp_token):
+            messages.success(request, 'OTP verified successfully.')
+            return redirect('dashboard')
+        else:
+            messages.error(request, 'Invalid OTP.')
+    return render(request, 'verify_otp.html')
+
+
 @login_required
 def transaction_history(request):
-    # Fetch transactions for the current user
     user = request.user
-    transactions = Transaction.objects.filter(user=user).order_by('-date')  # Most recent first
+    form = TransactionFilterForm(request.GET or None)
+    transactions = Transaction.objects.filter(account__user=user)
 
-    # Render the transactions in a template
-    return render(request, 'transaction_history.html', {
-        'transactions': transactions
-    })
+    if form.is_valid():
+        if form.cleaned_data['date_from']:
+            transactions = transactions.filter(date__gte=form.cleaned_data['date_from'])
+        if form.cleaned_data['date_to']:
+            transactions = transactions.filter(date__lte=form.cleaned_data['date_to'])
+        if form.cleaned_data['transaction_type']:
+            transactions = transactions.filter(transaction_type=form.cleaned_data['transaction_type'])
+        if form.cleaned_data['min_amount']:
+            transactions = transactions.filter(amount__gte=form.cleaned_data['min_amount'])
+        if form.cleaned_data['max_amount']:
+            transactions = transactions.filter(amount__lte=form.cleaned_data['max_amount'])
+
+    return render(request, 'transaction_history.html', {'transactions': transactions, 'form': form})
 
 
 @login_required
@@ -216,3 +273,35 @@ def account_summary(request):
     account = get_object_or_404(Account, user=request.user)
     transactions = Transaction.objects.filter(account=account).order_by('-date')
     return render(request, 'bank/account_summary.html', {'account': account, 'transactions': transactions})
+
+
+@login_required
+def account_statement(request):
+    user = request.user
+    transactions = Transaction.objects.filter(account__user=user)
+    html = render_to_string('account_statement.html', {'transactions': transactions})
+    response = HttpResponse(content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename="account_statement.pdf"'
+    pisa_status = pisa.CreatePDF(BytesIO(html), dest=response)
+    if pisa_status.err:
+        return HttpResponse('Error generating PDF')
+    return response
+
+
+@login_required
+def user_analytics(request):
+    user = request.user
+    transactions = Transaction.objects.filter(account__user=user)
+
+    # Example data aggregation
+    data = {
+        'labels': ['January', 'February', 'March'],  # Replace with dynamic data
+        'datasets': [{
+            'label': 'Spending',
+            'data': [100, 200, 300]  # Replace with dynamic data
+        }]
+    }
+    return render(request, 'user_analytics.html', {'data': data})
+
+
+

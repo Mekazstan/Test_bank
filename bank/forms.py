@@ -37,3 +37,10 @@ class TransferForm(forms.Form):
         if not to_account.isdigit():  # Simple validation to check if it's a numeric account number
             raise forms.ValidationError('Invalid account number.')
         return to_account
+
+class TransactionFilterForm(forms.Form):
+    date_from = forms.DateField(required=False, widget=forms.TextInput(attrs={'type': 'date'}))
+    date_to = forms.DateField(required=False, widget=forms.TextInput(attrs={'type': 'date'}))
+    transaction_type = forms.ChoiceField(choices=[('', 'All'), ('deposit', 'Deposit'), ('withdrawal', 'Withdrawal'), ('transfer', 'Transfer')], required=False)
+    min_amount = forms.DecimalField(required=False, decimal_places=2, max_digits=10)
+    max_amount = forms.DecimalField(required=False, decimal_places=2, max_digits=10)
