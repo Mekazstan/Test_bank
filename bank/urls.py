@@ -11,6 +11,7 @@ urlpatterns = [
     path('transaction-history/', views.transaction_history, name='transaction_history'),  # Transaction history view
     path('profile/', views.profile, name='profile'),  # User profile and settings view
     path('contact-admin/', views.contact_admin, name='contact_admin'),  # Contact admin view
+    path('account_summary/', views.account_summary, name='account_summary'),
     
     # Authentication (if not handled automatically via Django)
     path('register/', views.register, name='register'),  # Register view

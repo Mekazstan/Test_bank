@@ -1,11 +1,12 @@
 import random
+from django.http import HttpResponseBadRequest
 from django.core.mail import send_mail
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.contrib.auth import login as auth_login
 from django.contrib.auth.views import LoginView
-from .forms import ContactAdminForm, RegisterForm
+from .forms import ContactAdminForm, RegisterForm, TransferForm
 from .models import Account, Transaction, Transfer, Notification
 from django.urls import reverse
 
@@ -57,7 +58,7 @@ def profile(request):
 def deposit(request):
     if request.method == 'POST':
         amount = float(request.POST.get('amount'))
-        account = Account.objects.get(user=request.user)
+        account = get_object_or_404(Account, user=request.user)
         account.balance += amount
         account.save()
 
@@ -68,8 +69,12 @@ def deposit(request):
 @login_required
 def withdraw(request):
     if request.method == 'POST':
-        amount = float(request.POST.get('amount'))
-        account = Account.objects.get(user=request.user)
+        try:
+            amount = float(request.POST.get('amount'))
+        except (ValueError, TypeError):
+            return HttpResponseBadRequest('Invalid amount')
+
+        account = get_object_or_404(Account, user=request.user)
         if account.balance >= amount:
             account.balance -= amount
             account.save()
@@ -145,35 +150,35 @@ def notifications(request):
 
 @login_required
 def generate_otp(request):
-    from_account = Account.objects.get(user=request.user)
     if request.method == 'POST':
-        to_account_number = request.POST.get('to_account')
-        amount = float(request.POST.get('amount'))
+        form = TransferForm(request.POST)
+        if form.is_valid():
+            to_account_number = form.cleaned_data['to_account']
+            amount = form.cleaned_data['amount']
 
-        # Check if account exists
-        try:
-            to_account = Account.objects.get(account_number=to_account_number)
-        except Account.DoesNotExist:
-            return render(request, 'bank/generate_otp.html', {'error': 'Account does not exist'})
+            # Check if account exists
+            to_account = get_object_or_404(Account, account_number=to_account_number)
 
-        # Generate a random OTP
-        otp = str(random.randint(100000, 999999))
-        
-        # Save the transfer record with the OTP
-        Transfer.objects.create(from_account=from_account, to_account=to_account, amount=amount, otp=otp)
+            # Generate a random OTP
+            otp = str(random.randint(100000, 999999))
+            
+            # Save the transfer record with the OTP
+            Transfer.objects.create(from_account=request.user.account, to_account=to_account, amount=amount, otp=otp)
 
-        # Send OTP via email
-        send_mail(
-            'Your OTP for Transfer',
-            f"Your OTP for transferring ${amount} is {otp}",
-            'noreply@bankapp.com',
-            [request.user.email],
-            fail_silently=False,
-        )
+            # Send OTP via email
+            send_mail(
+                'Your OTP for Transfer',
+                f"Your OTP for transferring ${amount} is {otp}",
+                'noreply@bankapp.com',
+                [request.user.email],
+                fail_silently=False,
+            )
 
-        return render(request, 'bank/transfer.html', {'success': 'OTP sent to your email'})
+            return render(request, 'bank/transfer.html', {'success': 'OTP sent to your email'})
+    else:
+        form = TransferForm()
 
-    return render(request, 'bank/generate_otp.html')
+    return render(request, 'bank/generate_otp.html', {'form': form})
 
 @login_required
 def transaction_history(request):
@@ -194,17 +199,20 @@ def contact_admin(request):
         if form.is_valid():
             subject = form.cleaned_data['subject']
             message = form.cleaned_data['message']
-            email_from = request.user.email  # The user's email
-            admin_email = 'admin@example.com'  # Replace with your admin email
+            email_from = request.user.email
+            admin_email = 'admin@example.com'
 
-            # Send the email to the admin
             send_mail(subject, message, email_from, [admin_email])
 
             messages.success(request, 'Your message has been sent to the admin.')
-            return redirect('dashboard')
+            return redirect('contact_admin_confirmation')  # Redirect to a confirmation page
     else:
         form = ContactAdminForm()
 
-    return render(request, 'contact_admin.html', {
-        'form': form,
-    })
+    return render(request, 'contact_admin.html', {'form': form})
+
+@login_required
+def account_summary(request):
+    account = get_object_or_404(Account, user=request.user)
+    transactions = Transaction.objects.filter(account=account).order_by('-date')
+    return render(request, 'bank/account_summary.html', {'account': account, 'transactions': transactions})
